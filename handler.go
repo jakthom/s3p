@@ -9,7 +9,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"regexp"
-	"strings"
 	"time"
 
 	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
@@ -21,8 +20,6 @@ var awsAuthorizationSignedHeadersRegexp = regexp.MustCompile("SignedHeaders=([a-
 
 // Handler is a special handler that re-signs any AWS S3 request and sends it upstream
 type Handler struct {
-	// Print debug information
-	Debug bool
 
 	// http or https
 	UpstreamScheme string
@@ -45,11 +42,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Error().Err(err).Msg("unable to proxy request")
 		w.WriteHeader(http.StatusBadRequest)
-
-		// for security reasons, only write detailed error information in debug mode
-		if h.Debug {
-			w.Write([]byte(err.Error()))
-		}
 		return
 	}
 
@@ -111,39 +103,6 @@ func (h *Handler) validateIncomingHeaders(req *http.Request) (string, string, er
 		}
 	}
 	return "", "", fmt.Errorf("invalid AccessKeyID in Credential: %v", req)
-}
-
-func (h *Handler) generateFakeIncomingRequest(signer *v4.Signer, req *http.Request, region string) (*http.Request, error) {
-	fakeReq, err := http.NewRequest(req.Method, req.URL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	fakeReq.URL.RawPath = req.URL.Path
-
-	// We already validated there there is exactly one Authorization header
-	authorizationHeader := req.Header.Get("authorization")
-	match := awsAuthorizationSignedHeadersRegexp.FindStringSubmatch(authorizationHeader)
-	if len(match) == 2 {
-		for _, header := range strings.Split(match[1], ";") {
-			fakeReq.Header.Set(header, req.Header.Get(header))
-		}
-	}
-
-	// Delete a potentially double-added header
-	fakeReq.Header.Del("host")
-
-	// The X-Amz-Date header contains a timestamp, such as: 20190929T182805Z
-	signTime, err := time.Parse("20060102T150405Z", req.Header["X-Amz-Date"][0])
-	if err != nil {
-		return nil, fmt.Errorf("error parsing X-Amz-Date %v - %v", req.Header["X-Amz-Date"][0], err)
-	}
-
-	// Sign the fake request with the original timestamp
-	if err := h.signWithTime(signer, fakeReq, region, signTime); err != nil {
-		return nil, err
-	}
-
-	return fakeReq, nil
 }
 
 func (h *Handler) assembleUpstreamReq(signer *v4.Signer, req *http.Request, region string) (*http.Request, error) {
